@@ -16,8 +16,14 @@ use serde_json::json;
 pub(crate) async fn handle_torrent_add(
     api_token: &str,
     payload: &web::Json<TransmissionRequest>,
+    app_data: &web::Data<AppData>,
 ) -> Result<Option<serde_json::Value>> {
     let arguments = payload.arguments.as_ref().unwrap().as_object().unwrap();
+    let category = arguments
+        .get("tvCategory")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     if arguments.contains_key("metainfo") {
         // .torrent files
         let b64 = arguments["metainfo"].as_str().unwrap();
@@ -28,11 +34,19 @@ pub(crate) async fn handle_torrent_add(
 
         match Torrent::read_from_bytes(bytes) {
             Ok(t) => {
-                // let name = t.name;
                 info!(
                     "{}: torrent uploaded",
                     format!("[ffff: {}]", t.name).magenta()
                 );
+                if let Some(ref cat) = category {
+                    let hash = t.info_hash().to_lowercase();
+                    info!("{}: storing category '{}'", &hash[..4], cat);
+                    app_data
+                        .category_map
+                        .lock()
+                        .unwrap()
+                        .insert(hash, cat.clone());
+                }
             }
             Err(_) => info!("New torrent uploaded"),
         };
@@ -41,11 +55,24 @@ pub(crate) async fn handle_torrent_add(
         let magnet_url = arguments["filename"].as_str().unwrap();
         putio::add_transfer(api_token, magnet_url).await?;
         match Magnet::new(magnet_url) {
-            Ok(m) if m.dn.is_some() => {
-                info!(
-                    "{}: magnet link uploaded",
-                    format!("[ffff: {}]", urldecode::decode(m.dn.unwrap())).magenta()
-                );
+            Ok(m) => {
+                if let Some(ref cat) = category {
+                    if let Some(ref xt) = m.xt {
+                        let hash = xt.to_lowercase();
+                        info!("{}: storing category '{}'", &hash[..4], cat);
+                        app_data
+                            .category_map
+                            .lock()
+                            .unwrap()
+                            .insert(hash, cat.clone());
+                    }
+                }
+                if m.dn.is_some() {
+                    info!(
+                        "{}: magnet link uploaded",
+                        format!("[ffff: {}]", urldecode::decode(m.dn.unwrap())).magenta()
+                    );
+                }
             }
             _ => {
                 info!("unknown magnet link uploaded");

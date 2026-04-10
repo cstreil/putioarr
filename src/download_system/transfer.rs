@@ -111,14 +111,28 @@ async fn recurse_download_targets(
     let mut targets = Vec::<DownloadTarget>::new();
     let response = putio::list_files(&app_data.config.putio.api_key, file_id).await?;
 
+    // Look up category for this transfer hash
+    let category = app_data
+        .category_map
+        .lock()
+        .unwrap()
+        .get(hash)
+        .cloned();
+
+    // Build the effective base path: download_directory/category if category exists
+    let effective_base = match &category {
+        Some(cat) => Path::new(&base_path).join(cat).to_string_lossy().to_string(),
+        None => base_path.clone(),
+    };
+
     let to = if top_level {
         if let Some(tname) = transfer_name {
             match response.parent.file_type.as_str() {
-                "FOLDER" => Path::new(&base_path).join(tname),
-                _ => Path::new(&base_path).join(tname).join(&response.parent.name),
+                "FOLDER" => Path::new(&effective_base).join(tname),
+                _ => Path::new(&effective_base).join(tname).join(&response.parent.name),
             }
         } else {
-            Path::new(&base_path).join(&response.parent.name)
+            Path::new(&effective_base).join(&response.parent.name)
         }
     } else {
         Path::new(&base_path).join(&response.parent.name)

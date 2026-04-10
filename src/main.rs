@@ -68,6 +68,7 @@ pub struct PutioConfig {
 
 pub struct AppData {
     pub config: Config,
+    pub category_map: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -117,6 +118,7 @@ async fn main() -> Result<()> {
 
             let app_data = web::Data::new(AppData {
                 config: config.clone(),
+                category_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             });
 
             match putio::account_info(&app_data.config.putio.api_key).await {
