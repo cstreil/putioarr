@@ -144,7 +144,7 @@ impl ArrApp {
                 }
             }
 
-            if history_response.total_records < inspected {
+            if inspected < history_response.total_records {
                 page += 1;
             } else {
                 return Ok(false);

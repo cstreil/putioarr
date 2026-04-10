@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
 
             let app_data = web::Data::new(AppData {
                 config: config.clone(),
-                category_map: std::sync::Mutex::new(std::collections::HashMap::new()),
+                category_map: std::sync::Mutex::new(crate::http::handlers::load_category_map()),
             });
 
             match putio::account_info(&app_data.config.putio.api_key).await {

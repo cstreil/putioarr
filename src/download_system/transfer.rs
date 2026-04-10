@@ -12,7 +12,8 @@ use async_recursion::async_recursion;
 use colored::*;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
-use std::{fmt::Display, path::Path};
+use std::{fmt::Display, fs, path::Path};
+use tokio::fs::metadata;
 use tokio::time::sleep;
 
 #[derive(Clone)]
@@ -317,6 +318,28 @@ pub async fn produce_transfers(app_data: Data<AppData>, tx: Sender<TransferMessa
             transfer.targets = Some(targets?);
             if transfer.is_imported().await {
                 info!("{}: already imported", &transfer);
+                // Delete local files before going to watch_seeding
+                let top_level_target = transfer.get_top_level();
+                match metadata(&top_level_target.to).await {
+                    Ok(m) if m.is_dir() => {
+                        if let Err(e) = fs::remove_dir_all(&top_level_target.to) {
+                            warn!("{}: failed to delete: {}", &top_level_target, e);
+                        } else {
+                            info!("{}: deleted", &top_level_target);
+                        }
+                    }
+                    Ok(m) if m.is_file() => {
+                        if let Err(e) = fs::remove_file(&top_level_target.to) {
+                            warn!("{}: failed to delete: {}", &top_level_target, e);
+                        } else {
+                            info!("{}: deleted", &top_level_target);
+                        }
+                    }
+                    Err(e) => {
+                        debug!("{}: already gone ({})", &top_level_target, e);
+                    }
+                    _ => {}
+                };
                 seen.push(transfer.transfer_id);
                 tx.send(TransferMessage::Imported(transfer)).await?;
             } else {

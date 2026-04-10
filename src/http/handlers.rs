@@ -12,6 +12,29 @@ use lava_torrent::torrent::v1::Torrent;
 use log::info;
 use magnet_url::Magnet;
 use serde_json::json;
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+const CATEGORY_MAP_FILE: &str = "/config/category_map.json";
+
+fn save_category_map(app_data: &web::Data<AppData>) {
+    let map = app_data.category_map.lock().unwrap();
+    if let Ok(json) = serde_json::to_string(&*map) {
+        let _ = fs::write(CATEGORY_MAP_FILE, json);
+    }
+}
+
+pub fn load_category_map() -> HashMap<String, String> {
+    if Path::new(CATEGORY_MAP_FILE).exists() {
+        if let Ok(content) = fs::read_to_string(CATEGORY_MAP_FILE) {
+            if let Ok(map) = serde_json::from_str(&content) {
+                return map;
+            }
+        }
+    }
+    HashMap::new()
+}
 
 /// Map URL-path app name to download category
 pub(crate) fn app_to_category(app: &str) -> &str {
@@ -37,6 +60,13 @@ pub(crate) async fn handle_torrent_add(
         .map(|s| s.to_string())
         .or_else(|| url_category.map(|s| s.to_string()));
 
+    info!(
+        "torrent-add: tvCategory={:?}, url_category={:?}, resolved={:?}",
+        arguments.get("tvCategory").and_then(|v| v.as_str()),
+        url_category,
+        category
+    );
+
     if arguments.contains_key("metainfo") {
         // .torrent files
         let b64 = arguments["metainfo"].as_str().unwrap();
@@ -58,7 +88,8 @@ pub(crate) async fn handle_torrent_add(
                         .category_map
                         .lock()
                         .unwrap()
-                        .insert(hash, cat.clone());
+                        .insert(hash.clone(), cat.clone());
+                    save_category_map(&app_data);
                 }
             }
             Err(_) => info!("New torrent uploaded"),
@@ -71,13 +102,18 @@ pub(crate) async fn handle_torrent_add(
             Ok(m) => {
                 if let Some(ref cat) = category {
                     if let Some(ref xt) = m.xt {
-                        let hash = xt.to_lowercase();
+                        // Strip "urn:btih:" prefix to match put.io's hash format
+                        let hash = xt
+                            .strip_prefix("urn:btih:")
+                            .unwrap_or(xt)
+                            .to_lowercase();
                         info!("{}: storing category '{}'", &hash[..4], cat);
                         app_data
                             .category_map
                             .lock()
                             .unwrap()
-                            .insert(hash, cat.clone());
+                            .insert(hash.clone(), cat.clone());
+                        save_category_map(&app_data);
                     }
                 }
                 if m.dn.is_some() {
@@ -144,6 +180,8 @@ pub(crate) async fn handle_torrent_get(
     let transfers = putio::list_transfers(api_token).await.unwrap().transfers;
     let category_map = app_data.category_map.lock().unwrap();
 
+    let download_base = app_data.config.download_directory.clone();
+
     let transmission_transfers = transfers
         .into_iter()
         .filter(|t| match category {
@@ -153,13 +191,28 @@ pub(crate) async fn handle_torrent_get(
                 .as_ref()
                 .map_or(false, |h| category_map.get(h).map_or(false, |c| c == cat)),
         })
-        .map(|t| async {
+        .map(|t| {
+            let cat = t
+                .hash
+                .as_ref()
+                .and_then(|h| category_map.get(h))
+                .cloned();
             let mut tt: TransmissionTorrent = t.into();
-            tt.download_dir = app_data.config.download_directory.clone();
+            // Set correct download_dir including category subdirectory
+            tt.download_dir = match &cat {
+                Some(c) => format!("{}/{}", download_base, c),
+                None => download_base.clone(),
+            };
+            // If put.io says COMPLETED but local download may not be done,
+            // report as Seeding (status 6) with is_finished=false so *arr apps
+            // keep polling instead of trying to import prematurely.
+            if tt.is_finished && tt.status == crate::services::transmission::TransmissionTorrentStatus::Stopped {
+                tt.status = crate::services::transmission::TransmissionTorrentStatus::Seeding;
+                tt.is_finished = false;
+            }
             tt
-        });
-    let transmission_transfers: Vec<TransmissionTorrent> =
-        futures::future::join_all(transmission_transfers).await;
+        })
+        .collect::<Vec<TransmissionTorrent>>();
 
     drop(category_map);
 
