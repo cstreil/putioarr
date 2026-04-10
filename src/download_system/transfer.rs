@@ -146,24 +146,28 @@ async fn recurse_download_targets(
                 }
             }
         }
-        "VIDEO" | "AUDIO" => {
-            // Get download URL for file
-            let url = putio::url(&app_data.config.putio.api_key, response.parent.id).await?;
-            targets.push(DownloadTarget {
-                from: Some(url),
-                target_type: TargetType::File,
-                to,
-                top_level,
-                transfer_hash: hash.to_string(),
-                media_type: MediaType::from_file_type_str(response.parent.file_type.as_str()),
-            });
-        }
         _ => {
-            debug!(
-                "{}: skipping filetype {}",
-                response.parent.name,
-                response.parent.file_type.as_str()
-            );
+            let media_type = MediaType::from_file_type_str(response.parent.file_type.as_str())
+                .or_else(|| MediaType::from_file_name(&response.parent.name));
+
+            if let Some(media_type) = media_type {
+                let url =
+                    putio::url(&app_data.config.putio.api_key, response.parent.id).await?;
+                targets.push(DownloadTarget {
+                    from: Some(url),
+                    target_type: TargetType::File,
+                    to,
+                    top_level,
+                    transfer_hash: hash.to_string(),
+                    media_type: Some(media_type),
+                });
+            } else {
+                debug!(
+                    "{}: skipping filetype {}",
+                    response.parent.name,
+                    response.parent.file_type.as_str()
+                );
+            }
         }
     }
 
@@ -181,14 +185,39 @@ pub enum TransferMessage {
 pub enum MediaType {
     Audio,
     Video,
+    Subtitle,
 }
 
 impl MediaType {
+    const VIDEO_EXTENSIONS: &'static [&'static str] =
+        &["mkv", "mp4", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts"];
+    const AUDIO_EXTENSIONS: &'static [&'static str] =
+        &["flac", "mp3", "aac", "ogg", "opus", "wav", "m4a", "alac", "ape", "wv"];
+    const SUBTITLE_EXTENSIONS: &'static [&'static str] = &["srt", "sub", "ass", "ssa", "vtt"];
+
     pub fn from_file_type_str(file_type: &str) -> Option<Self> {
         match file_type {
             "AUDIO" => Some(Self::Audio),
             "VIDEO" => Some(Self::Video),
             _ => None,
+        }
+    }
+
+    pub fn from_file_name(file_name: &str) -> Option<Self> {
+        let extension = Path::new(file_name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if Self::VIDEO_EXTENSIONS.contains(&extension.as_str()) {
+            Some(Self::Video)
+        } else if Self::AUDIO_EXTENSIONS.contains(&extension.as_str()) {
+            Some(Self::Audio)
+        } else if Self::SUBTITLE_EXTENSIONS.contains(&extension.as_str()) {
+            Some(Self::Subtitle)
+        } else {
+            None
         }
     }
 }
