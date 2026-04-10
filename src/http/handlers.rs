@@ -126,16 +126,29 @@ pub(crate) async fn handle_torrent_remove(
 pub(crate) async fn handle_torrent_get(
     api_token: &str,
     app_data: &web::Data<AppData>,
+    category: Option<&str>,
 ) -> Option<serde_json::Value> {
     let transfers = putio::list_transfers(api_token).await.unwrap().transfers;
+    let category_map = app_data.category_map.lock().unwrap();
 
-    let transmission_transfers = transfers.into_iter().map(|t| async {
-        let mut tt: TransmissionTorrent = t.into();
-        tt.download_dir = app_data.config.download_directory.clone();
-        tt
-    });
+    let transmission_transfers = transfers
+        .into_iter()
+        .filter(|t| match category {
+            None => true,
+            Some(cat) => t
+                .hash
+                .as_ref()
+                .map_or(false, |h| category_map.get(h).map_or(false, |c| c == cat)),
+        })
+        .map(|t| async {
+            let mut tt: TransmissionTorrent = t.into();
+            tt.download_dir = app_data.config.download_directory.clone();
+            tt
+        });
     let transmission_transfers: Vec<TransmissionTorrent> =
         futures::future::join_all(transmission_transfers).await;
+
+    drop(category_map);
 
     let torrents = json!(transmission_transfers);
 

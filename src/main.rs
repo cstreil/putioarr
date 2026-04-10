@@ -146,6 +146,8 @@ async fn main() -> Result<()> {
                     .app_data(app_data.clone())
                     .service(routes::rpc_post)
                     .service(routes::rpc_get)
+                    .service(routes::rpc_post_app)
+                    .service(routes::rpc_get_app)
             })
             .bind((config.bind_address, config.port))?
             .run()

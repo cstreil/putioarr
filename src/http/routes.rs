@@ -21,6 +21,26 @@ pub(crate) async fn rpc_post(
     req: HttpRequest,
     app_data: web::Data<AppData>,
 ) -> HttpResponse {
+    rpc_post_impl(payload, req, app_data, None).await
+}
+
+#[post("/{app}/transmission/rpc")]
+pub(crate) async fn rpc_post_app(
+    path: web::Path<String>,
+    payload: web::Json<TransmissionRequest>,
+    req: HttpRequest,
+    app_data: web::Data<AppData>,
+) -> HttpResponse {
+    let app = path.into_inner();
+    rpc_post_impl(payload, req, app_data, Some(app.as_str())).await
+}
+
+async fn rpc_post_impl(
+    payload: web::Json<TransmissionRequest>,
+    req: HttpRequest,
+    app_data: web::Data<AppData>,
+    category: Option<&str>,
+) -> HttpResponse {
     let putio_api_token = &app_data.config.putio.api_key;
 
     // Not sure if necessary since we might just look at the session id.
@@ -36,7 +56,7 @@ pub(crate) async fn rpc_post(
             download_dir: app_data.config.download_directory.clone(),
             ..Default::default()
         })),
-        "torrent-get" => handle_torrent_get(putio_api_token, &app_data).await,
+        "torrent-get" => handle_torrent_get(putio_api_token, &app_data, category).await,
         "torrent-set" => None, // Nothing to do here
         "queue-move-top" => None,
         "torrent-remove" => handle_torrent_remove(putio_api_token, &payload).await,
@@ -47,7 +67,7 @@ pub(crate) async fn rpc_post(
                 return HttpResponse::BadRequest().body(e.to_string());
             }
         },
-        _ => panic!("Unknwon method {}", payload.method),
+        _ => panic!("Unknown method {}", payload.method),
     };
 
     let response = TransmissionResponse {
@@ -71,8 +91,20 @@ async fn rpc_get(req: HttpRequest, app_data: web::Data<AppData>) -> HttpResponse
         .content_type(ContentType::json())
         .insert_header(("X-Transmission-Session-Id", SESSION_ID))
         .body("")
-    // HttpResponse::Ok().body("Hello world!")
 }
+
+#[get("/{app}/transmission/rpc")]
+async fn rpc_get_app(req: HttpRequest, app_data: web::Data<AppData>) -> HttpResponse {
+    if validate_user(req, &app_data).await.is_err() {
+        return HttpResponse::Forbidden().body("forbidden");
+    }
+
+    HttpResponse::Conflict()
+        .content_type(ContentType::json())
+        .insert_header(("X-Transmission-Session-Id", SESSION_ID))
+        .body("")
+}
+
 async fn validate_user(req: HttpRequest, app_data: &web::Data<AppData>) -> Result<()> {
     let auth = Authorization::<Basic>::parse(&req)?;
     let user_username = auth.as_ref().user_id();
