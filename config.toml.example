@@ -4,7 +4,7 @@
 username = "putio"
 password = "changeme"
 download_directory = "/data/downloads"
-port = 9092
+port = 9091
 polling_interval = 10
 loglevel = "info"
 

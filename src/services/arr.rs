@@ -42,10 +42,10 @@ pub struct ArrApp {
 impl ArrApp {
     pub fn new(app_type: ArrAppType, config: &ArrConfig, media_type: transfer::MediaType) -> Self {
         Self {
-            app_type: app_type,
+            app_type,
             config: config.clone(),
             client: reqwest::Client::new(),
-            media_type: media_type,
+            media_type,
         }
     }
 
@@ -133,14 +133,15 @@ impl ArrApp {
             let history_response: ArrHistoryResponse = json?;
 
             for record in history_response.records {
-                if (record.event_type == "downloadFolderImported"
-                    || record.event_type == "trackFileImported")
-                    && record.data["droppedPath"].as_ref().unwrap() == &target.to
+                inspected += 1;
+                if record.event_type == "downloadFolderImported"
+                    || record.event_type == "trackFileImported"
                 {
-                    return Ok(true);
-                } else {
-                    inspected += 1;
-                    continue;
+                    if let Some(Some(dropped_path)) = record.data.get("droppedPath") {
+                        if dropped_path == &target.to {
+                            return Ok(true);
+                        }
+                    }
                 }
             }
 

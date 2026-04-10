@@ -1,4 +1,4 @@
-use crate::{http::routes, services::arr, services::putio};
+use crate::{http::routes, services::arr, services::putio::PutIOClient};
 use actix_web::{web, App, HttpServer};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -68,7 +68,11 @@ pub struct PutioConfig {
 
 pub struct AppData {
     pub config: Config,
-    pub category_map: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// Shared put.io HTTP client — reuses connections across all API calls.
+    pub putio_client: PutIOClient,
+    /// Maps torrent hash → download category (e.g. "tv", "movies", "music").
+    /// Uses a RwLock so concurrent reads don't block each other.
+    pub category_map: tokio::sync::RwLock<std::collections::HashMap<String, String>>,
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -116,18 +120,24 @@ async fn main() -> Result<()> {
 
             info!("Starting putioarr, version {}", VERSION);
 
-            let app_data = web::Data::new(AppData {
-                config: config.clone(),
-                category_map: std::sync::Mutex::new(crate::http::handlers::load_category_map()),
-            });
+            let putio_client = PutIOClient::new(&config.putio.api_key);
 
-            match putio::account_info(&app_data.config.putio.api_key).await {
+            // Verify put.io connectivity before starting workers
+            match putio_client.account_info().await {
                 Ok(_) => {}
                 Err(e) => {
                     error!("{}", e);
                     bail!(e)
                 }
             }
+
+            let app_data = web::Data::new(AppData {
+                config: config.clone(),
+                putio_client,
+                category_map: tokio::sync::RwLock::new(
+                    crate::http::handlers::load_category_map(),
+                ),
+            });
 
             let data_for_download_system = app_data.clone();
             download_system::start(data_for_download_system)
@@ -138,21 +148,28 @@ async fn main() -> Result<()> {
                 "Starting web server at http://{}:{}",
                 config.bind_address, config.port
             );
-            HttpServer::new(move || {
+
+            let server = HttpServer::new(move || {
                 App::new()
-                    // .wrap(Logger::new(
-                    //     "%a \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T",
-                    // ))
                     .app_data(app_data.clone())
                     .service(routes::rpc_post)
                     .service(routes::rpc_get)
                     .service(routes::rpc_post_app)
                     .service(routes::rpc_get_app)
             })
-            .bind((config.bind_address, config.port))?
-            .run()
-            .await
-            .context("Unable to start http server")
+            .bind((config.bind_address.clone(), config.port))?
+            .run();
+
+            // Graceful shutdown on Ctrl-C / SIGTERM
+            tokio::select! {
+                result = server => {
+                    result.context("HTTP server error")
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Received shutdown signal, stopping gracefully");
+                    Ok(())
+                }
+            }
         }
         Commands::GetToken => {
             get_token().await?;

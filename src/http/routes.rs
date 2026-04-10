@@ -42,8 +42,6 @@ async fn rpc_post_impl(
     app_data: web::Data<AppData>,
     category: Option<&str>,
 ) -> HttpResponse {
-    let putio_api_token = &app_data.config.putio.api_key;
-
     // Not sure if necessary since we might just look at the session id.
     if validate_user(req, &app_data).await.is_err() {
         return HttpResponse::Conflict()
@@ -57,18 +55,38 @@ async fn rpc_post_impl(
             download_dir: app_data.config.download_directory.clone(),
             ..Default::default()
         })),
-        "torrent-get" => handle_torrent_get(putio_api_token, &app_data, category).await,
+        "torrent-get" => match handle_torrent_get(&app_data, category).await {
+            Ok(v) => v,
+            Err(e) => {
+                error!("{}", e);
+                return HttpResponse::InternalServerError().body(e.to_string());
+            }
+        },
         "torrent-set" => None, // Nothing to do here
         "queue-move-top" => None,
-        "torrent-remove" => handle_torrent_remove(putio_api_token, &payload).await,
-        "torrent-add" => match handle_torrent_add(putio_api_token, &payload, &app_data, category).await {
+        "torrent-remove" => match handle_torrent_remove(&payload, &app_data).await {
+            Ok(v) => v,
+            Err(e) => {
+                error!("{}", e);
+                return HttpResponse::InternalServerError().body(e.to_string());
+            }
+        },
+        "torrent-add" => match handle_torrent_add(&payload, &app_data, category).await {
             Ok(v) => v,
             Err(e) => {
                 error!("{}", e);
                 return HttpResponse::BadRequest().body(e.to_string());
             }
         },
-        _ => panic!("Unknown method {}", payload.method),
+        _ => {
+            error!("Unknown Transmission RPC method: {}", payload.method);
+            return HttpResponse::BadRequest()
+                .content_type(ContentType::json())
+                .json(json!({
+                    "result": "error",
+                    "error": format!("Unknown method: {}", payload.method)
+                }));
+        }
     };
 
     let response = TransmissionResponse {

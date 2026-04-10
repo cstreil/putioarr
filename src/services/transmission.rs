@@ -78,9 +78,10 @@ impl From<PutIOTransfer> for TransmissionTorrent {
             None => Utc::now().format("%FT%T").to_string(),
         };
 
-        let started_at = Utc
-            .from_local_datetime(&NaiveDateTime::parse_from_str(&s, "%FT%T").unwrap())
-            .unwrap();
+        let started_at = NaiveDateTime::parse_from_str(&s, "%FT%T")
+            .ok()
+            .and_then(|ndt| Utc.from_local_datetime(&ndt).single())
+            .unwrap_or_else(Utc::now);
         let now = Utc::now();
         let seconds_downloading = (now - started_at).num_seconds();
         let default = &"Unknown".to_string();
@@ -133,5 +134,117 @@ impl From<String> for TransmissionTorrentStatus {
                 Self::CheckWait
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::putio::PutIOTransfer;
+
+    fn make_transfer(status: &str, finished_at: Option<&str>) -> PutIOTransfer {
+        PutIOTransfer {
+            id: 1,
+            hash: Some("abcdef1234567890".to_string()),
+            name: Some("Test Torrent".to_string()),
+            size: Some(1000),
+            downloaded: Some(500),
+            finished_at: finished_at.map(|s| s.to_string()),
+            estimated_time: Some(60),
+            status: status.to_string(),
+            started_at: Some("2024-01-01T00:00:00".to_string()),
+            error_message: None,
+            file_id: Some(42),
+            userfile_exists: false,
+        }
+    }
+
+    #[test]
+    fn test_status_mapping_downloading() {
+        let status = TransmissionTorrentStatus::from("DOWNLOADING".to_string());
+        assert_eq!(status, TransmissionTorrentStatus::Downloading);
+    }
+
+    #[test]
+    fn test_status_mapping_completed() {
+        let status = TransmissionTorrentStatus::from("COMPLETED".to_string());
+        assert_eq!(status, TransmissionTorrentStatus::Stopped);
+    }
+
+    #[test]
+    fn test_status_mapping_seeding() {
+        let status = TransmissionTorrentStatus::from("SEEDING".to_string());
+        assert_eq!(status, TransmissionTorrentStatus::Seeding);
+    }
+
+    #[test]
+    fn test_status_mapping_error() {
+        let status = TransmissionTorrentStatus::from("ERROR".to_string());
+        assert_eq!(status, TransmissionTorrentStatus::Stopped);
+    }
+
+    #[test]
+    fn test_status_mapping_in_queue() {
+        let status = TransmissionTorrentStatus::from("IN_QUEUE".to_string());
+        assert_eq!(status, TransmissionTorrentStatus::Queued);
+    }
+
+    #[test]
+    fn test_status_mapping_case_insensitive() {
+        let status = TransmissionTorrentStatus::from("downloading".to_string());
+        assert_eq!(status, TransmissionTorrentStatus::Downloading);
+    }
+
+    #[test]
+    fn test_status_mapping_unknown_defaults_to_checkwait() {
+        let status = TransmissionTorrentStatus::from("UNKNOWN_STATUS".to_string());
+        assert_eq!(status, TransmissionTorrentStatus::CheckWait);
+    }
+
+    #[test]
+    fn test_torrent_conversion_is_finished_when_finished_at_set() {
+        let transfer = make_transfer("COMPLETED", Some("2024-01-02T10:00:00"));
+        let torrent: TransmissionTorrent = transfer.into();
+        assert!(torrent.is_finished);
+    }
+
+    #[test]
+    fn test_torrent_conversion_not_finished_when_no_finished_at() {
+        let transfer = make_transfer("DOWNLOADING", None);
+        let torrent: TransmissionTorrent = transfer.into();
+        assert!(!torrent.is_finished);
+    }
+
+    #[test]
+    fn test_torrent_conversion_left_until_done() {
+        let transfer = make_transfer("DOWNLOADING", None);
+        let torrent: TransmissionTorrent = transfer.into();
+        assert_eq!(torrent.left_until_done, 500); // size(1000) - downloaded(500)
+    }
+
+    #[test]
+    fn test_torrent_conversion_left_until_done_never_negative() {
+        let mut transfer = make_transfer("COMPLETED", Some("2024-01-02T00:00:00"));
+        transfer.downloaded = Some(2000); // more than size
+        let torrent: TransmissionTorrent = transfer.into();
+        assert_eq!(torrent.left_until_done, 0);
+    }
+
+    #[test]
+    fn test_torrent_conversion_default_name_when_missing() {
+        let mut transfer = make_transfer("DOWNLOADING", None);
+        transfer.name = None;
+        let torrent: TransmissionTorrent = transfer.into();
+        assert_eq!(torrent.name, "Unknown");
+    }
+
+    #[test]
+    fn test_transmission_config_defaults() {
+        let config = TransmissionConfig::default();
+        assert_eq!(config.rpc_version, "18");
+        assert_eq!(config.version, "14.0.0");
+        assert_eq!(config.seed_ratio_limit, 1.0);
+        assert!(config.seed_ratio_limited);
+        assert!(!config.idle_seeding_limit_enabled);
     }
 }

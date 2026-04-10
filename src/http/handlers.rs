@@ -1,11 +1,11 @@
 use crate::{
     // downloader::DownloadStatus,
-    services::putio::{self, PutIOTransfer},
+    services::putio::PutIOTransfer,
     services::transmission::{TransmissionRequest, TransmissionTorrent},
     AppData,
 };
 use actix_web::web;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use base64::Engine;
 use colored::Colorize;
 use lava_torrent::torrent::v1::Torrent;
@@ -20,8 +20,8 @@ fn category_map_file() -> String {
     std::env::var("CATEGORY_MAP_FILE").unwrap_or_else(|_| "/config/category_map.json".to_string())
 }
 
-fn save_category_map(app_data: &web::Data<AppData>) {
-    let map = app_data.category_map.lock().unwrap();
+async fn save_category_map(app_data: &web::Data<AppData>) {
+    let map = app_data.category_map.read().await;
     if let Ok(json) = serde_json::to_string(&*map) {
         let _ = fs::write(category_map_file(), json);
     }
@@ -49,13 +49,67 @@ pub(crate) fn app_to_category(app: &str) -> &str {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_to_category_sonarr() {
+        assert_eq!(app_to_category("sonarr"), "tv");
+    }
+
+    #[test]
+    fn test_app_to_category_radarr() {
+        assert_eq!(app_to_category("radarr"), "movies");
+    }
+
+    #[test]
+    fn test_app_to_category_lidarr() {
+        assert_eq!(app_to_category("lidarr"), "music");
+    }
+
+    #[test]
+    fn test_app_to_category_unknown_passthrough() {
+        assert_eq!(app_to_category("whisparr"), "whisparr");
+        assert_eq!(app_to_category("custom"), "custom");
+    }
+
+    #[test]
+    fn test_load_category_map_returns_empty_for_missing_file() {
+        // Set CATEGORY_MAP_FILE to a non-existent path
+        std::env::set_var("CATEGORY_MAP_FILE", "/tmp/putioarr_nonexistent_test_map.json");
+        let map = load_category_map();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_load_category_map_parses_valid_json() {
+        use std::io::Write;
+        let path = "/tmp/putioarr_test_category_map.json";
+        let mut file = std::fs::File::create(path).unwrap();
+        write!(file, r#"{{"abc123": "tv", "def456": "movies"}}"#).unwrap();
+
+        std::env::set_var("CATEGORY_MAP_FILE", path);
+        let map = load_category_map();
+        assert_eq!(map.get("abc123"), Some(&"tv".to_string()));
+        assert_eq!(map.get("def456"), Some(&"movies".to_string()));
+
+        std::fs::remove_file(path).ok();
+    }
+}
+
 pub(crate) async fn handle_torrent_add(
-    api_token: &str,
     payload: &web::Json<TransmissionRequest>,
     app_data: &web::Data<AppData>,
     url_category: Option<&str>,
 ) -> Result<Option<serde_json::Value>> {
-    let arguments = payload.arguments.as_ref().unwrap().as_object().unwrap();
+    let arguments = payload
+        .arguments
+        .as_ref()
+        .context("Missing arguments in torrent-add request")?
+        .as_object()
+        .context("Arguments field is not a JSON object")?;
+
     // Prefer explicit tvCategory from args, fall back to URL-path category
     let category = arguments
         .get("tvCategory")
@@ -72,11 +126,13 @@ pub(crate) async fn handle_torrent_add(
 
     if arguments.contains_key("metainfo") {
         // .torrent files
-        let b64 = arguments["metainfo"].as_str().unwrap();
+        let b64 = arguments["metainfo"]
+            .as_str()
+            .context("metainfo field is not a string")?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(b64)
-            .unwrap();
-        putio::upload_file(api_token, &bytes).await?;
+            .context("Failed to base64-decode metainfo")?;
+        app_data.putio_client.upload_file(&bytes).await?;
 
         match Torrent::read_from_bytes(bytes) {
             Ok(t) => {
@@ -89,18 +145,20 @@ pub(crate) async fn handle_torrent_add(
                     info!("{}: storing category '{}'", &hash[..4], cat);
                     app_data
                         .category_map
-                        .lock()
-                        .unwrap()
+                        .write()
+                        .await
                         .insert(hash.clone(), cat.clone());
-                    save_category_map(&app_data);
+                    save_category_map(app_data).await;
                 }
             }
             Err(_) => info!("New torrent uploaded"),
         };
     } else {
         // Magnet links
-        let magnet_url = arguments["filename"].as_str().unwrap();
-        putio::add_transfer(api_token, magnet_url).await?;
+        let magnet_url = arguments["filename"]
+            .as_str()
+            .context("filename field is not a string")?;
+        app_data.putio_client.add_transfer(magnet_url).await?;
         match Magnet::new(magnet_url) {
             Ok(m) => {
                 if let Some(ref cat) = category {
@@ -113,10 +171,10 @@ pub(crate) async fn handle_torrent_add(
                         info!("{}: storing category '{}'", &hash[..4], cat);
                         app_data
                             .category_map
-                            .lock()
-                            .unwrap()
+                            .write()
+                            .await
                             .insert(hash.clone(), cat.clone());
-                        save_category_map(&app_data);
+                        save_category_map(app_data).await;
                     }
                 }
                 if m.dn.is_some() {
@@ -135,53 +193,73 @@ pub(crate) async fn handle_torrent_add(
 }
 
 pub(crate) async fn handle_torrent_remove(
-    api_token: &str,
     payload: &web::Json<TransmissionRequest>,
-) -> Option<serde_json::Value> {
-    // TODO: leanup all the unwrap stuff
-    let arguments = payload.arguments.as_ref().unwrap().as_object().unwrap();
+    app_data: &web::Data<AppData>,
+) -> Result<Option<serde_json::Value>> {
+    let arguments = payload
+        .arguments
+        .as_ref()
+        .context("Missing arguments in torrent-remove request")?
+        .as_object()
+        .context("Arguments field is not a JSON object")?;
+
     let ids: Vec<&str> = arguments
         .get("ids")
-        .unwrap()
+        .context("Missing 'ids' field in torrent-remove arguments")?
         .as_array()
-        .unwrap()
+        .context("'ids' field is not an array")?
         .iter()
-        .map(|id| id.as_str().unwrap())
+        .map(|id| id.as_str().unwrap_or(""))
+        .filter(|s| !s.is_empty())
         .collect();
+
     let delete_local_data = arguments
         .get("delete-local-data")
-        .unwrap()
-        .as_bool()
-        .unwrap();
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
-    let putio_transfers: Vec<PutIOTransfer> = putio::list_transfers(api_token)
+    let putio_transfers: Vec<PutIOTransfer> = app_data
+        .putio_client
+        .list_transfers()
         .await
-        .unwrap()
+        .context("Failed to list put.io transfers")?
         .transfers
         .into_iter()
         .filter(|t| ids.contains(&t.hash.clone().unwrap_or(String::from("no_hash")).as_str()))
         .collect();
 
     for t in putio_transfers {
-        putio::remove_transfer(api_token, t.id).await.unwrap();
+        app_data
+            .putio_client
+            .remove_transfer(t.id)
+            .await
+            .with_context(|| format!("Failed to remove transfer {}", t.id))?;
 
         if t.userfile_exists && delete_local_data {
-            putio::delete_file(api_token, t.file_id.unwrap())
-                .await
-                .unwrap();
+            if let Some(file_id) = t.file_id {
+                app_data
+                    .putio_client
+                    .delete_file(file_id)
+                    .await
+                    .with_context(|| format!("Failed to delete file {}", file_id))?;
+            }
         }
     }
 
-    None
+    Ok(None)
 }
 
 pub(crate) async fn handle_torrent_get(
-    api_token: &str,
     app_data: &web::Data<AppData>,
     category: Option<&str>,
-) -> Option<serde_json::Value> {
-    let transfers = putio::list_transfers(api_token).await.unwrap().transfers;
-    let category_map = app_data.category_map.lock().unwrap();
+) -> Result<Option<serde_json::Value>> {
+    let transfers = app_data
+        .putio_client
+        .list_transfers()
+        .await
+        .context("Failed to list put.io transfers")?
+        .transfers;
+    let category_map = app_data.category_map.read().await;
 
     let download_base = app_data.config.download_directory.clone();
 
@@ -224,5 +302,5 @@ pub(crate) async fn handle_torrent_get(
     let mut arguments = serde_json::Map::new();
     arguments.insert(String::from("torrents"), torrents);
 
-    Some(json!(arguments))
+    Ok(Some(json!(arguments)))
 }

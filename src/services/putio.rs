@@ -37,219 +37,205 @@ impl PutIOTransfer {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct AccountInfoResponse {}
+/// A shared HTTP client for all put.io API calls.
+/// Holds a single `reqwest::Client` that reuses connections across requests.
+#[derive(Clone, Debug)]
+pub struct PutIOClient {
+    client: reqwest::Client,
+    api_key: String,
+}
 
-pub async fn account_info(api_token: &str) -> Result<AccountInfoResponse> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get("https://api.put.io/v2/account/info")
-        .header("authorization", format!("Bearer {}", api_token))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        bail!("Error getting put.io account info: {}", response.status());
+impl PutIOClient {
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_key: api_key.into(),
+        }
     }
 
-    Ok(response.json().await?)
-}
+    pub async fn account_info(&self) -> Result<PutIOAccountResponse> {
+        let response = self
+            .client
+            .get("https://api.put.io/v2/account/info")
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
 
-#[derive(Debug, Deserialize)]
-pub struct ListTransferResponse {
-    pub transfers: Vec<PutIOTransfer>,
-}
+        if !response.status().is_success() {
+            bail!("Error getting put.io account info: {}", response.status());
+        }
 
-#[derive(Debug, Deserialize)]
-pub struct GetTransferResponse {
-    pub transfer: PutIOTransfer,
-}
-
-/// Returns the user's transfers.
-pub async fn list_transfers(api_token: &str) -> Result<ListTransferResponse> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get("https://api.put.io/v2/transfers/list")
-        .timeout(Duration::from_secs(10))
-        .header("authorization", format!("Bearer {}", api_token))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        bail!("Error getting put.io transfers: {}", response.status());
+        Ok(response.json().await?)
     }
 
-    Ok(response.json().await?)
-}
+    /// Returns the user's transfers.
+    pub async fn list_transfers(&self) -> Result<ListTransferResponse> {
+        let response = self
+            .client
+            .get("https://api.put.io/v2/transfers/list")
+            .timeout(Duration::from_secs(10))
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
 
-pub async fn get_transfer(api_token: &str, transfer_id: u64) -> Result<GetTransferResponse> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get(format!("https://api.put.io/v2/transfers/{}", transfer_id))
-        .timeout(Duration::from_secs(10))
-        .header("authorization", format!("Bearer {}", api_token))
-        .send()
-        .await?;
+        if !response.status().is_success() {
+            bail!("Error getting put.io transfers: {}", response.status());
+        }
 
-    if !response.status().is_success() {
-        bail!(
-            "Error getting put.io transfer id:{}: {}",
-            transfer_id,
-            response.status()
-        );
+        Ok(response.json().await?)
     }
 
-    Ok(response.json().await?)
-}
+    pub async fn get_transfer(&self, transfer_id: u64) -> Result<GetTransferResponse> {
+        let response = self
+            .client
+            .get(format!("https://api.put.io/v2/transfers/{}", transfer_id))
+            .timeout(Duration::from_secs(10))
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
 
-pub async fn remove_transfer(api_token: &str, transfer_id: u64) -> Result<()> {
-    let client = reqwest::Client::new();
-    let form = multipart::Form::new().text("transfer_ids", transfer_id.to_string());
-    let response = client
-        .post("https://api.put.io/v2/transfers/remove")
-        .timeout(Duration::from_secs(10))
-        .multipart(form)
-        .header("authorization", format!("Bearer {}", api_token))
-        .send()
-        .await?;
+        if !response.status().is_success() {
+            bail!(
+                "Error getting put.io transfer id:{}: {}",
+                transfer_id,
+                response.status()
+            );
+        }
 
-    if !response.status().is_success() {
-        bail!(
-            "Error removing put.io transfer id:{}: {}",
-            transfer_id,
-            response.status()
-        );
+        Ok(response.json().await?)
     }
 
-    Ok(())
-}
+    pub async fn remove_transfer(&self, transfer_id: u64) -> Result<()> {
+        let form = multipart::Form::new().text("transfer_ids", transfer_id.to_string());
+        let response = self
+            .client
+            .post("https://api.put.io/v2/transfers/remove")
+            .timeout(Duration::from_secs(10))
+            .multipart(form)
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
 
-pub async fn delete_file(api_token: &str, file_id: i64) -> Result<()> {
-    let client = reqwest::Client::new();
-    let form = multipart::Form::new().text("file_ids", file_id.to_string());
-    let response = client
-        .post("https://api.put.io/v2/files/delete")
-        .timeout(Duration::from_secs(10))
-        .multipart(form)
-        .header("authorization", format!("Bearer {}", api_token))
-        .send()
-        .await?;
+        if !response.status().is_success() {
+            bail!(
+                "Error removing put.io transfer id:{}: {}",
+                transfer_id,
+                response.status()
+            );
+        }
 
-    if !response.status().is_success() {
-        bail!(
-            "Error removing put.io file/direcotry id:{}: {}",
-            file_id,
-            response.status()
-        );
+        Ok(())
     }
 
-    Ok(())
-}
+    pub async fn delete_file(&self, file_id: i64) -> Result<()> {
+        let form = multipart::Form::new().text("file_ids", file_id.to_string());
+        let response = self
+            .client
+            .post("https://api.put.io/v2/files/delete")
+            .timeout(Duration::from_secs(10))
+            .multipart(form)
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
 
-pub async fn add_transfer(api_token: &str, url: &str) -> Result<()> {
-    let client = reqwest::Client::new();
-    let form = multipart::Form::new().text("url", url.to_string());
-    let response = client
-        .post("https://api.put.io/v2/transfers/add")
-        .timeout(Duration::from_secs(10))
-        .multipart(form)
-        .header("authorization", format!("Bearer {}", api_token))
-        .send()
-        .await?;
+        if !response.status().is_success() {
+            bail!(
+                "Error removing put.io file/directory id:{}: {}",
+                file_id,
+                response.status()
+            );
+        }
 
-    if !response.status().is_success() {
-        bail!("Error adding url: {} to put.io: {}", url, response.status());
+        Ok(())
     }
 
-    Ok(())
-}
+    pub async fn add_transfer(&self, url: &str) -> Result<()> {
+        let form = multipart::Form::new().text("url", url.to_string());
+        let response = self
+            .client
+            .post("https://api.put.io/v2/transfers/add")
+            .timeout(Duration::from_secs(10))
+            .multipart(form)
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
 
-pub async fn upload_file(api_token: &str, bytes: &[u8]) -> Result<()> {
-    let client = reqwest::Client::new();
-    let file_part = multipart::Part::bytes(bytes.to_owned()).file_name("foo.torrent");
+        if !response.status().is_success() {
+            bail!("Error adding url: {} to put.io: {}", url, response.status());
+        }
 
-    let form = reqwest::multipart::Form::new()
-        .part("file", file_part)
-        .text("filename", "foo.torrent");
-
-    let response = client
-        .post("https://upload.put.io/v2/files/upload")
-        .timeout(Duration::from_secs(10))
-        .header("authorization", format!("Bearer {}", api_token))
-        .multipart(form)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        bail!("Error uploading file to put.io: {}", response.status());
-    }
-    // Todo: error if invalid request
-    Ok(())
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UrlResponse {
-    pub url: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ListFileResponse {
-    pub files: Vec<FileResponse>,
-    pub parent: FileResponse,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FileResponse {
-    pub content_type: String,
-    pub id: i64,
-    pub name: String,
-    pub file_type: String,
-}
-
-pub async fn list_files(api_token: &str, file_id: i64) -> Result<ListFileResponse> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get(format!(
-            "https://api.put.io/v2/files/list?parent_id={}",
-            file_id
-        ))
-        .header("authorization", format!("Bearer {}", api_token))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        bail!(
-            "Error listing put.io file/direcotry id:{}: {}",
-            file_id,
-            response.status()
-        );
+        Ok(())
     }
 
-    Ok(response.json().await?)
-}
+    pub async fn upload_file(&self, bytes: &[u8]) -> Result<()> {
+        let file_part = multipart::Part::bytes(bytes.to_owned()).file_name("foo.torrent");
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct URLResponse {
-    pub url: String,
-}
+        let form = reqwest::multipart::Form::new()
+            .part("file", file_part)
+            .text("filename", "foo.torrent");
 
-pub async fn url(api_token: &str, file_id: i64) -> Result<String> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get(format!("https://api.put.io/v2/files/{}/url", file_id))
-        .header("authorization", format!("Bearer {}", api_token))
-        .send()
-        .await?;
+        let response = self
+            .client
+            .post("https://upload.put.io/v2/files/upload")
+            .timeout(Duration::from_secs(10))
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .multipart(form)
+            .send()
+            .await?;
 
-    if !response.status().is_success() {
-        bail!(
-            "Error getting url for put.io file id:{}: {}",
-            file_id,
-            response.status()
-        );
+        if !response.status().is_success() {
+            bail!("Error uploading file to put.io: {}", response.status());
+        }
+
+        Ok(())
     }
 
-    Ok(response.json::<URLResponse>().await?.url)
+    pub async fn list_files(&self, file_id: i64) -> Result<ListFileResponse> {
+        let response = self
+            .client
+            .get(format!(
+                "https://api.put.io/v2/files/list?parent_id={}",
+                file_id
+            ))
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            bail!(
+                "Error listing put.io file/directory id:{}: {}",
+                file_id,
+                response.status()
+            );
+        }
+
+        Ok(response.json().await?)
+    }
+
+    pub async fn url(&self, file_id: i64) -> Result<String> {
+        let response = self
+            .client
+            .get(format!("https://api.put.io/v2/files/{}/url", file_id))
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            bail!(
+                "Error getting url for put.io file id:{}: {}",
+                file_id,
+                response.status()
+            );
+        }
+
+        Ok(response.json::<UrlResponse>().await?.url)
+    }
 }
+
+// ---------------------------------------------------------------------------
+// Free-standing functions kept for backward-compatibility with callers that
+// still pass an api_token string directly (OOB OAuth flow, etc.).
+// ---------------------------------------------------------------------------
 
 /// Returns a new OOB code.
 pub async fn get_oob() -> Result<String> {
@@ -284,4 +270,38 @@ pub async fn check_oob(oob_code: String) -> Result<String> {
     Ok(j.get("oauth_token")
         .expect("deserializing OAuth token")
         .to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Response types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ListTransferResponse {
+    pub transfers: Vec<PutIOTransfer>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetTransferResponse {
+    pub transfer: PutIOTransfer,
+}
+
+/// Single unified URL response type (previously duplicated as UrlResponse / URLResponse).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UrlResponse {
+    pub url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListFileResponse {
+    pub files: Vec<FileResponse>,
+    pub parent: FileResponse,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileResponse {
+    pub content_type: String,
+    pub id: i64,
+    pub name: String,
+    pub file_type: String,
 }
