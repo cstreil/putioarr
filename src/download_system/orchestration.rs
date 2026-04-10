@@ -11,7 +11,7 @@ use anyhow::Result;
 use async_channel::{Receiver, Sender};
 use colored::*;
 use log::{info, warn};
-use std::{fs, time::Duration};
+use std::{cmp, fs, time::Duration};
 use tokio::{fs::metadata, time::sleep};
 
 use super::transfer::TransferMessage;
@@ -86,8 +86,11 @@ impl Worker {
                             }))
                             .await?;
                     } else {
-                        // TODO: figure out what to do here..
-                        warn!("{}: not all targets downloaded", t)
+                        warn!(
+                            "{}: not all targets downloaded successfully, skipping import",
+                            t
+                        );
+                        continue;
                     }
                 }
                 TransferMessage::Downloaded(t) => {
@@ -115,15 +118,27 @@ async fn watch_for_import(
 
             match metadata(&top_level_target.to).await {
                 Ok(m) if m.is_dir() => {
-                    fs::remove_dir_all(&top_level_target.to).unwrap();
-                    info!("{}: deleted", &top_level_target);
+                    if let Err(e) = fs::remove_dir_all(&top_level_target.to) {
+                        warn!("{}: failed to delete directory: {}", &top_level_target, e);
+                    } else {
+                        info!("{}: deleted", &top_level_target);
+                    }
                 }
                 Ok(m) if m.is_file() => {
-                    fs::remove_file(&top_level_target.to).unwrap();
-                    info!("{}: deleted", &top_level_target);
+                    if let Err(e) = fs::remove_file(&top_level_target.to) {
+                        warn!("{}: failed to delete file: {}", &top_level_target, e);
+                    } else {
+                        info!("{}: deleted", &top_level_target);
+                    }
                 }
-                Ok(_) | Err(_) => {
-                    panic!("{}: no idea how to handle", &top_level_target)
+                Ok(_) => {
+                    warn!(
+                        "{}: unexpected file type, skipping deletion",
+                        &top_level_target
+                    );
+                }
+                Err(e) => {
+                    warn!("{}: failed to stat for deletion: {}", &top_level_target, e);
                 }
             };
             let m = transfer.clone();
@@ -139,23 +154,42 @@ async fn watch_for_import(
 
 async fn watch_seeding(app_data: Data<AppData>, transfer: Transfer) -> Result<()> {
     info!("{}: watching seeding", transfer);
+    let mut backoff = app_data.config.polling_interval;
+    let max_backoff: u64 = 300; // 5 minutes cap
     loop {
         let putio_transfer =
-            putio::get_transfer(&app_data.config.putio.api_key, transfer.transfer_id)
-                .await?
-                .transfer;
+            match putio::get_transfer(&app_data.config.putio.api_key, transfer.transfer_id).await {
+                Ok(resp) => {
+                    backoff = app_data.config.polling_interval; // reset on success
+                    resp.transfer
+                }
+                Err(e) => {
+                    warn!(
+                        "{}: error checking transfer status (retrying in {}s): {}",
+                        transfer, backoff, e
+                    );
+                    sleep(Duration::from_secs(backoff)).await;
+                    backoff = cmp::min(backoff * 2, max_backoff);
+                    continue;
+                }
+            };
         if putio_transfer.status != "SEEDING" {
             info!("{}: stopped seeding", transfer);
             putio::remove_transfer(&app_data.config.putio.api_key, transfer.transfer_id).await?;
             info!("{}: removed from put.io", transfer);
-            match putio::delete_file(&app_data.config.putio.api_key, transfer.file_id.unwrap())
-                .await
-            {
-                Ok(_) => {
-                    info!("{}: deleted remote files", transfer);
+            match transfer.file_id {
+                Some(file_id) => {
+                    match putio::delete_file(&app_data.config.putio.api_key, file_id).await {
+                        Ok(_) => {
+                            info!("{}: deleted remote files", transfer);
+                        }
+                        Err(e) => {
+                            warn!("{}: unable to delete remote files: {}", transfer, e);
+                        }
+                    };
                 }
-                Err(_) => {
-                    warn!("{}: unable to delete remote files", transfer);
+                None => {
+                    warn!("{}: no file_id, skipping remote file deletion", transfer);
                 }
             };
             break;

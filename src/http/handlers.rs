@@ -5,11 +5,11 @@ use crate::{
     AppData,
 };
 use actix_web::web;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use base64::Engine;
 use colored::Colorize;
 use lava_torrent::torrent::v1::Torrent;
-use log::info;
+use log::{info, warn};
 use magnet_url::Magnet;
 use serde_json::json;
 use std::collections::HashMap;
@@ -55,7 +55,11 @@ pub(crate) async fn handle_torrent_add(
     app_data: &web::Data<AppData>,
     url_category: Option<&str>,
 ) -> Result<Option<serde_json::Value>> {
-    let arguments = payload.arguments.as_ref().unwrap().as_object().unwrap();
+    let arguments = payload
+        .arguments
+        .as_ref()
+        .and_then(|v| v.as_object())
+        .context("torrent-add: missing or invalid arguments")?;
     // Prefer explicit tvCategory from args, fall back to URL-path category
     let category = arguments
         .get("tvCategory")
@@ -72,10 +76,13 @@ pub(crate) async fn handle_torrent_add(
 
     if arguments.contains_key("metainfo") {
         // .torrent files
-        let b64 = arguments["metainfo"].as_str().unwrap();
+        let b64 = arguments
+            .get("metainfo")
+            .and_then(|v| v.as_str())
+            .context("torrent-add: missing metainfo field")?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(b64)
-            .unwrap();
+            .context("torrent-add: failed to decode base64 metainfo")?;
         putio::upload_file(api_token, &bytes).await?;
 
         match Torrent::read_from_bytes(bytes) {
@@ -87,11 +94,9 @@ pub(crate) async fn handle_torrent_add(
                 if let Some(ref cat) = category {
                     let hash = t.info_hash().to_lowercase();
                     info!("{}: storing category '{}'", &hash[..4], cat);
-                    app_data
-                        .category_map
-                        .lock()
-                        .unwrap()
-                        .insert(hash.clone(), cat.clone());
+                    if let Ok(mut map) = app_data.category_map.lock() {
+                        map.insert(hash.clone(), cat.clone());
+                    }
                     save_category_map(&app_data);
                 }
             }
@@ -99,30 +104,28 @@ pub(crate) async fn handle_torrent_add(
         };
     } else {
         // Magnet links
-        let magnet_url = arguments["filename"].as_str().unwrap();
+        let magnet_url = arguments
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .context("torrent-add: missing filename field")?;
         putio::add_transfer(api_token, magnet_url).await?;
         match Magnet::new(magnet_url) {
             Ok(m) => {
                 if let Some(ref cat) = category {
                     if let Some(ref xt) = m.xt {
                         // Strip "urn:btih:" prefix to match put.io's hash format
-                        let hash = xt
-                            .strip_prefix("urn:btih:")
-                            .unwrap_or(xt)
-                            .to_lowercase();
+                        let hash = xt.strip_prefix("urn:btih:").unwrap_or(xt).to_lowercase();
                         info!("{}: storing category '{}'", &hash[..4], cat);
-                        app_data
-                            .category_map
-                            .lock()
-                            .unwrap()
-                            .insert(hash.clone(), cat.clone());
+                        if let Ok(mut map) = app_data.category_map.lock() {
+                            map.insert(hash.clone(), cat.clone());
+                        }
                         save_category_map(&app_data);
                     }
                 }
-                if m.dn.is_some() {
+                if let Some(ref dn) = m.dn {
                     info!(
                         "{}: magnet link uploaded",
-                        format!("[ffff: {}]", urldecode::decode(m.dn.unwrap())).magenta()
+                        format!("[ffff: {}]", urldecode::decode(dn.to_string())).magenta()
                     );
                 }
             }
@@ -138,37 +141,49 @@ pub(crate) async fn handle_torrent_remove(
     api_token: &str,
     payload: &web::Json<TransmissionRequest>,
 ) -> Option<serde_json::Value> {
-    // TODO: leanup all the unwrap stuff
-    let arguments = payload.arguments.as_ref().unwrap().as_object().unwrap();
+    let arguments = match payload.arguments.as_ref().and_then(|v| v.as_object()) {
+        Some(obj) => obj,
+        None => {
+            warn!("torrent-remove: missing or invalid arguments");
+            return None;
+        }
+    };
+
     let ids: Vec<&str> = arguments
         .get("ids")
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|id| id.as_str().unwrap())
-        .collect();
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|id| id.as_str()).collect())
+        .unwrap_or_default();
+
     let delete_local_data = arguments
         .get("delete-local-data")
-        .unwrap()
-        .as_bool()
-        .unwrap();
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
-    let putio_transfers: Vec<PutIOTransfer> = putio::list_transfers(api_token)
-        .await
-        .unwrap()
-        .transfers
-        .into_iter()
-        .filter(|t| ids.contains(&t.hash.clone().unwrap_or(String::from("no_hash")).as_str()))
-        .collect();
+    let putio_transfers: Vec<PutIOTransfer> = match putio::list_transfers(api_token).await {
+        Ok(resp) => resp
+            .transfers
+            .into_iter()
+            .filter(|t| t.hash.as_deref().map_or(false, |h| ids.contains(&h)))
+            .collect(),
+        Err(e) => {
+            warn!("torrent-remove: failed to list transfers: {}", e);
+            return None;
+        }
+    };
 
     for t in putio_transfers {
-        putio::remove_transfer(api_token, t.id).await.unwrap();
+        if let Err(e) = putio::remove_transfer(api_token, t.id).await {
+            warn!("torrent-remove: failed to remove transfer {}: {}", t.id, e);
+            continue;
+        }
 
         if t.userfile_exists && delete_local_data {
-            putio::delete_file(api_token, t.file_id.unwrap())
-                .await
-                .unwrap();
+            if let Some(file_id) = t.file_id {
+                if let Err(e) = putio::delete_file(api_token, file_id).await {
+                    warn!("torrent-remove: failed to delete file {}: {}", file_id, e);
+                }
+            }
         }
     }
 
@@ -180,8 +195,17 @@ pub(crate) async fn handle_torrent_get(
     app_data: &web::Data<AppData>,
     category: Option<&str>,
 ) -> Option<serde_json::Value> {
-    let transfers = putio::list_transfers(api_token).await.unwrap().transfers;
-    let category_map = app_data.category_map.lock().unwrap();
+    let transfers = match putio::list_transfers(api_token).await {
+        Ok(resp) => resp.transfers,
+        Err(e) => {
+            warn!("torrent-get: failed to list transfers: {}", e);
+            return None;
+        }
+    };
+    let category_map = app_data
+        .category_map
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     let download_base = app_data.config.download_directory.clone();
 
@@ -195,11 +219,7 @@ pub(crate) async fn handle_torrent_get(
                 .map_or(false, |h| category_map.get(h).map_or(false, |c| c == cat)),
         })
         .map(|t| {
-            let cat = t
-                .hash
-                .as_ref()
-                .and_then(|h| category_map.get(h))
-                .cloned();
+            let cat = t.hash.as_ref().and_then(|h| category_map.get(h)).cloned();
             let mut tt: TransmissionTorrent = t.into();
             // Set correct download_dir including category subdirectory
             tt.download_dir = match &cat {
@@ -209,7 +229,9 @@ pub(crate) async fn handle_torrent_get(
             // If put.io says COMPLETED but local download may not be done,
             // report as Seeding (status 6) with is_finished=false so *arr apps
             // keep polling instead of trying to import prematurely.
-            if tt.is_finished && tt.status == crate::services::transmission::TransmissionTorrentStatus::Stopped {
+            if tt.is_finished
+                && tt.status == crate::services::transmission::TransmissionTorrentStatus::Stopped
+            {
                 tt.status = crate::services::transmission::TransmissionTorrentStatus::Seeding;
                 tt.is_finished = false;
             }

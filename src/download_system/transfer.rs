@@ -64,7 +64,15 @@ impl Transfer {
         info!("{}: generating targets", self);
         let default = "0000".to_string();
         let hash = self.hash.as_ref().unwrap_or(&default).as_str();
-        recurse_download_targets(&self.app_data, self.file_id.unwrap(), hash, None, true, Some(&self.name)).await
+        recurse_download_targets(
+            &self.app_data,
+            self.file_id.unwrap(),
+            hash,
+            None,
+            true,
+            Some(&self.name),
+        )
+        .await
     }
 
     pub fn get_top_level(&self) -> DownloadTarget {
@@ -113,16 +121,14 @@ async fn recurse_download_targets(
     let response = putio::list_files(&app_data.config.putio.api_key, file_id).await?;
 
     // Look up category for this transfer hash
-    let category = app_data
-        .category_map
-        .lock()
-        .unwrap()
-        .get(hash)
-        .cloned();
+    let category = app_data.category_map.lock().unwrap().get(hash).cloned();
 
     // Build the effective base path: download_directory/category if category exists
     let effective_base = match &category {
-        Some(cat) => Path::new(&base_path).join(cat).to_string_lossy().to_string(),
+        Some(cat) => Path::new(&base_path)
+            .join(cat)
+            .to_string_lossy()
+            .to_string(),
         None => base_path.clone(),
     };
 
@@ -130,7 +136,9 @@ async fn recurse_download_targets(
         if let Some(tname) = transfer_name {
             match response.parent.file_type.as_str() {
                 "FOLDER" => Path::new(&effective_base).join(tname),
-                _ => Path::new(&effective_base).join(tname).join(&response.parent.name),
+                _ => Path::new(&effective_base)
+                    .join(tname)
+                    .join(&response.parent.name),
             }
         } else {
             Path::new(&effective_base).join(&response.parent.name)
@@ -179,8 +187,7 @@ async fn recurse_download_targets(
                 .or_else(|| MediaType::from_file_name(&response.parent.name));
 
             if let Some(media_type) = media_type {
-                let url =
-                    putio::url(&app_data.config.putio.api_key, response.parent.id).await?;
+                let url = putio::url(&app_data.config.putio.api_key, response.parent.id).await?;
 
                 if top_level && transfer_name.is_some() {
                     let dir_path = Path::new(&effective_base)
@@ -233,10 +240,12 @@ pub enum MediaType {
 }
 
 impl MediaType {
-    const VIDEO_EXTENSIONS: &'static [&'static str] =
-        &["mkv", "mp4", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts"];
-    const AUDIO_EXTENSIONS: &'static [&'static str] =
-        &["flac", "mp3", "aac", "ogg", "opus", "wav", "m4a", "alac", "ape", "wv"];
+    const VIDEO_EXTENSIONS: &'static [&'static str] = &[
+        "mkv", "mp4", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts",
+    ];
+    const AUDIO_EXTENSIONS: &'static [&'static str] = &[
+        "flac", "mp3", "aac", "ogg", "opus", "wav", "m4a", "alac", "ape", "wv",
+    ];
     const SUBTITLE_EXTENSIONS: &'static [&'static str] = &["srt", "sub", "ass", "ssa", "vtt"];
 
     pub fn from_file_type_str(file_type: &str) -> Option<Self> {

@@ -1,7 +1,9 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, time::Duration};
+
+const PUTIO_APP_ID: &str = "6487";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PutIOAccountInfo {
@@ -187,11 +189,6 @@ pub async fn upload_file(api_token: &str, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 #[derive(Debug, Serialize, Deserialize)]
-pub struct UrlResponse {
-    pub url: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct ListFileResponse {
     pub files: Vec<FileResponse>,
     pub parent: FileResponse,
@@ -253,7 +250,11 @@ pub async fn url(api_token: &str, file_id: i64) -> Result<String> {
 
 /// Returns a new OOB code.
 pub async fn get_oob() -> Result<String> {
-    let response = reqwest::get("https://api.put.io/v2/oauth2/oob/code?app_id=6487").await?;
+    let response = reqwest::get(format!(
+        "https://api.put.io/v2/oauth2/oob/code?app_id={}",
+        PUTIO_APP_ID
+    ))
+    .await?;
 
     if !response.status().is_success() {
         bail!("Error getting put.io OOB: {}", response.status());
@@ -261,7 +262,7 @@ pub async fn get_oob() -> Result<String> {
 
     let j = response.json::<HashMap<String, String>>().await?;
 
-    Ok(j.get("code").expect("fetching OOB code").to_string())
+    Ok(j.get("code").context("fetching OOB code")?.to_string())
 }
 
 /// Returns new OAuth token if the OOB code is linked to the user's account.
@@ -282,6 +283,6 @@ pub async fn check_oob(oob_code: String) -> Result<String> {
     let j = response.json::<HashMap<String, String>>().await?;
 
     Ok(j.get("oauth_token")
-        .expect("deserializing OAuth token")
+        .context("deserializing OAuth token")?
         .to_string())
 }

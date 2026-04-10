@@ -135,7 +135,7 @@ impl ArrApp {
             for record in history_response.records {
                 if (record.event_type == "downloadFolderImported"
                     || record.event_type == "trackFileImported")
-                    && record.data["droppedPath"].as_ref().unwrap() == &target.to
+                    && record.data.get("droppedPath").and_then(|v| v.as_deref()) == Some(&target.to)
                 {
                     return Ok(true);
                 } else {

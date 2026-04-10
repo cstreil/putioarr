@@ -61,13 +61,15 @@ async fn rpc_post_impl(
         "torrent-set" => None, // Nothing to do here
         "queue-move-top" => None,
         "torrent-remove" => handle_torrent_remove(putio_api_token, &payload).await,
-        "torrent-add" => match handle_torrent_add(putio_api_token, &payload, &app_data, category).await {
-            Ok(v) => v,
-            Err(e) => {
-                error!("{}", e);
-                return HttpResponse::BadRequest().body(e.to_string());
+        "torrent-add" => {
+            match handle_torrent_add(putio_api_token, &payload, &app_data, category).await {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("{}", e);
+                    return HttpResponse::BadRequest().body(e.to_string());
+                }
             }
-        },
+        }
         _ => panic!("Unknown method {}", payload.method),
     };
 
