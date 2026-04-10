@@ -1,7 +1,8 @@
 FROM rust:1.82-bookworm AS builder
 
 WORKDIR /build
-COPY . .
+COPY Cargo.toml Cargo.lock* ./
+COPY src/ src/
 RUN cargo build --release
 
 FROM debian:bookworm-slim

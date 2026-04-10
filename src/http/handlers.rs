@@ -13,16 +13,29 @@ use log::info;
 use magnet_url::Magnet;
 use serde_json::json;
 
+/// Map URL-path app name to download category
+pub(crate) fn app_to_category(app: &str) -> &str {
+    match app {
+        "sonarr" => "tv",
+        "radarr" => "movies",
+        "lidarr" => "music",
+        _ => app,
+    }
+}
+
 pub(crate) async fn handle_torrent_add(
     api_token: &str,
     payload: &web::Json<TransmissionRequest>,
     app_data: &web::Data<AppData>,
+    url_category: Option<&str>,
 ) -> Result<Option<serde_json::Value>> {
     let arguments = payload.arguments.as_ref().unwrap().as_object().unwrap();
+    // Prefer explicit tvCategory from args, fall back to URL-path category
     let category = arguments
         .get("tvCategory")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(|s| s.to_string())
+        .or_else(|| url_category.map(|s| s.to_string()));
 
     if arguments.contains_key("metainfo") {
         // .torrent files

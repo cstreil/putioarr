@@ -32,7 +32,8 @@ pub(crate) async fn rpc_post_app(
     app_data: web::Data<AppData>,
 ) -> HttpResponse {
     let app = path.into_inner();
-    rpc_post_impl(payload, req, app_data, Some(app.as_str())).await
+    let category = crate::http::handlers::app_to_category(&app);
+    rpc_post_impl(payload, req, app_data, Some(category)).await
 }
 
 async fn rpc_post_impl(
@@ -60,7 +61,7 @@ async fn rpc_post_impl(
         "torrent-set" => None, // Nothing to do here
         "queue-move-top" => None,
         "torrent-remove" => handle_torrent_remove(putio_api_token, &payload).await,
-        "torrent-add" => match handle_torrent_add(putio_api_token, &payload, &app_data).await {
+        "torrent-add" => match handle_torrent_add(putio_api_token, &payload, &app_data, category).await {
             Ok(v) => v,
             Err(e) => {
                 error!("{}", e);
