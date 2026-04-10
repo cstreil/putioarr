@@ -183,7 +183,7 @@ async fn recurse_download_targets(
                     putio::url(&app_data.config.putio.api_key, response.parent.id).await?;
 
                 if top_level && transfer_name.is_some() {
-                    let dir_path = Path::new(&base_path)
+                    let dir_path = Path::new(&effective_base)
                         .join(transfer_name.unwrap())
                         .to_string_lossy()
                         .to_string();

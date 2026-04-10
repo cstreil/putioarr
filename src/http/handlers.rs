@@ -16,18 +16,21 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-const CATEGORY_MAP_FILE: &str = "/config/category_map.json";
+fn category_map_file() -> String {
+    std::env::var("CATEGORY_MAP_FILE").unwrap_or_else(|_| "/config/category_map.json".to_string())
+}
 
 fn save_category_map(app_data: &web::Data<AppData>) {
     let map = app_data.category_map.lock().unwrap();
     if let Ok(json) = serde_json::to_string(&*map) {
-        let _ = fs::write(CATEGORY_MAP_FILE, json);
+        let _ = fs::write(category_map_file(), json);
     }
 }
 
 pub fn load_category_map() -> HashMap<String, String> {
-    if Path::new(CATEGORY_MAP_FILE).exists() {
-        if let Ok(content) = fs::read_to_string(CATEGORY_MAP_FILE) {
+    let path = category_map_file();
+    if Path::new(&path).exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(map) = serde_json::from_str(&content) {
                 return map;
             }
