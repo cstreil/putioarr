@@ -1,0 +1,19 @@
+username = "putio"
+password = "putio4one"
+download_directory = "/data/downloads"
+port = 9092
+
+[putio]
+api_key = "YOUR_PUTIO_API_KEY"
+
+[sonarr]
+url = "http://sonarr:8989"
+api_key = "YOUR_SONARR_API_KEY"
+
+[radarr]
+url = "http://radarr:7878"
+api_key = "YOUR_RADARR_API_KEY"
+
+[lidarr]
+url = "http://lidarr:8686"
+api_key = "YOUR_LIDARR_API_KEY"

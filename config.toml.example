@@ -1,0 +1,29 @@
+# putioarr configuration
+# Copy this file to config.toml and fill in your values
+
+username = "putio"
+password = "changeme"
+download_directory = "/data/downloads"
+port = 9092
+polling_interval = 10
+loglevel = "info"
+
+# Skip downloading these directories (e.g., sample files)
+skip_directories = ["sample", "extras"]
+
+[putio]
+api_key = "YOUR_PUTIO_API_KEY"
+
+# Enable the arr apps you use (all are optional)
+
+[sonarr]
+url = "http://sonarr:8989"
+api_key = "YOUR_SONARR_API_KEY"
+
+[radarr]
+url = "http://radarr:7878"
+api_key = "YOUR_RADARR_API_KEY"
+
+[lidarr]
+url = "http://lidarr:8686"
+api_key = "YOUR_LIDARR_API_KEY"
