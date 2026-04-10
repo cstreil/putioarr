@@ -63,7 +63,7 @@ impl Transfer {
         info!("{}: generating targets", self);
         let default = "0000".to_string();
         let hash = self.hash.as_ref().unwrap_or(&default).as_str();
-        recurse_download_targets(&self.app_data, self.file_id.unwrap(), hash, None, true).await
+        recurse_download_targets(&self.app_data, self.file_id.unwrap(), hash, None, true, Some(&self.name)).await
     }
 
     pub fn get_top_level(&self) -> DownloadTarget {
@@ -105,14 +105,26 @@ async fn recurse_download_targets(
     hash: &str,
     override_base_path: Option<String>,
     top_level: bool,
+    transfer_name: Option<&str>,
 ) -> Result<Vec<DownloadTarget>> {
     let base_path = override_base_path.unwrap_or(app_data.config.download_directory.clone());
     let mut targets = Vec::<DownloadTarget>::new();
     let response = putio::list_files(&app_data.config.putio.api_key, file_id).await?;
-    let to = Path::new(&base_path)
-        .join(&response.parent.name)
-        .to_string_lossy()
-        .to_string();
+
+    let to = if top_level {
+        if let Some(tname) = transfer_name {
+            match response.parent.file_type.as_str() {
+                "FOLDER" => Path::new(&base_path).join(tname),
+                _ => Path::new(&base_path).join(tname).join(&response.parent.name),
+            }
+        } else {
+            Path::new(&base_path).join(&response.parent.name)
+        }
+    } else {
+        Path::new(&base_path).join(&response.parent.name)
+    }
+    .to_string_lossy()
+    .to_string();
 
     match response.parent.file_type.as_str() {
         "FOLDER" => {
@@ -140,6 +152,7 @@ async fn recurse_download_targets(
                             hash,
                             Some(new_base_path.clone()),
                             false,
+                            None,
                         )
                         .await?,
                     );
@@ -153,6 +166,22 @@ async fn recurse_download_targets(
             if let Some(media_type) = media_type {
                 let url =
                     putio::url(&app_data.config.putio.api_key, response.parent.id).await?;
+
+                if top_level && transfer_name.is_some() {
+                    let dir_path = Path::new(&base_path)
+                        .join(transfer_name.unwrap())
+                        .to_string_lossy()
+                        .to_string();
+                    targets.push(DownloadTarget {
+                        from: None,
+                        target_type: TargetType::Directory,
+                        to: dir_path,
+                        top_level: true,
+                        transfer_hash: hash.to_string(),
+                        media_type: None,
+                    });
+                }
+
                 targets.push(DownloadTarget {
                     from: Some(url),
                     target_type: TargetType::File,
