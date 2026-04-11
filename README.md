@@ -1,12 +1,27 @@
-# putioarr (Enhanced Fork)
+# putioarr
 
-A proxy that allows [put.io](https://put.io) to be used as a download client for **Sonarr**, **Radarr**, and **Lidarr**. It emulates the [Transmission](https://transmissionbt.com/) RPC API so you can configure put.io as a Transmission download client in your *arr apps.
+> Use [put.io](https://put.io) as a download client for **Sonarr**, **Radarr**, and **Lidarr** — with full music support.
 
-This fork is based on [gbagnoli/putioarr](https://github.com/gbagnoli/putioarr) and adds several improvements for reliable multi-app usage with Sonarr, Radarr, and Lidarr simultaneously.
+putioarr is a proxy that bridges put.io's cloud torrent service with the *arr media management stack. It emulates the [Transmission](https://transmissionbt.com/) RPC API, so you can add put.io as a download client in Sonarr, Radarr, or Lidarr and have your media automatically downloaded, imported, and organized.
 
-## Key Features
+**Fork of** [gbagnoli/putioarr](https://github.com/gbagnoli/putioarr) with significant improvements: Lidarr support, per-app routing, better import reliability, and code quality overhauls.
 
-### Per-App URL Routing
+## ✨ What's Different from the Original
+
+| | Original putioarr | This Fork |
+|---|---|---|
+| Lidarr support | ❌ | ✅ Full support with history matching |
+| Per-app URL routing | ❌ | ✅ `/sonarr/`, `/radarr/`, `/lidarr/` endpoints |
+| Import reliability | Folder name matching | Torrent name matching (fixes import errors) |
+| Error handling | `unwrap()`/`panic!()` | Proper error propagation |
+| Graceful shutdown | ❌ | ✅ Signal handling + cleanup |
+
+## Features
+
+### 🎵 Lidarr Support
+Full compatibility with Lidarr for automated music downloads. Uses `trackFileImported` events for proper history matching and supports FLAC, MP3, AAC, and more.
+
+### 🔀 Per-App URL Routing
 Each *arr app connects to a unique URL endpoint, enabling automatic category-based download routing:
 
 - **Sonarr** → `/sonarr/transmission/rpc` → downloads to `tv/`
@@ -25,9 +40,6 @@ The original putioarr used put.io folder names as download directory names, whic
 - Supported audio: flac, mp3, aac, ogg, opus, wav, m4a, alac, ape, wv
 - Supported subtitles: srt, sub, ass, ssa, vtt
 
-### Lidarr Support
-Full compatibility with Lidarr, including proper history matching using `trackFileImported` events.
-
 ## Installation
 
 ### Docker (Recommended)
@@ -38,7 +50,7 @@ Full compatibility with Lidarr, including proper history matching using `trackFi
 services:
   putioarr:
     build:
-      context: https://github.com/cstreil/putioarr.git#lidarr
+      context: https://github.com/cstreil/putioarr.git
       dockerfile: Dockerfile
     container_name: putioarr
     command: ["run", "-c", "/config/config.toml"]
@@ -74,7 +86,7 @@ docker run -d \
 ### From Source
 
 ```bash
-git clone https://github.com/cstreil/putioarr.git -b lidarr
+git clone https://github.com/cstreil/putioarr.git
 cd putioarr
 cargo build --release
 ```
