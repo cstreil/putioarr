@@ -48,7 +48,9 @@ async fn download_target(app_data: &Data<AppData>, target: &DownloadTarget) -> R
             if !Path::new(&target.to).exists() {
                 fs::create_dir(&target.to)?;
                 if Uid::effective().is_root() {
-                    target.to.clone().set_owner(app_data.config.uid)?;
+                    if let Err(e) = target.to.clone().set_owner(app_data.config.uid) {
+                        log::warn!("Could not set owner for directory {}: {}", &target.to, e);
+                    }
                 }
                 info!("{}: directory created", &target);
             }
@@ -83,7 +85,9 @@ async fn fetch(target: &DownloadTarget, uid: u32) -> Result<()> {
         tokio::io::copy(&mut item?.as_ref(), &mut tmp_file).await?;
     }
     if Uid::effective().is_root() {
-        tmp_path.clone().set_owner(uid)?;
+        if let Err(e) = tmp_path.clone().set_owner(uid) {
+            log::warn!("Could not set owner for {}: {}", tmp_path, e);
+        }
     }
 
     fs::rename(&tmp_path, &target.to)?;
