@@ -24,12 +24,21 @@ pub struct Transfer {
 }
 
 impl Transfer {
+    pub(crate) async fn category(&self) -> Option<String> {
+        let hash = self.hash.as_ref()?;
+        self.app_data.category_map.read().await.get(hash).cloned()
+    }
+
     pub async fn is_imported(&self) -> bool {
         let targets = match self.targets.as_ref() {
             Some(t) => t.clone(),
             None => return false,
         };
-        let apps = ArrApp::from_config(&self.app_data.config);
+        let category = self.category().await;
+        let apps = ArrApp::from_config(&self.app_data.config)
+            .into_iter()
+            .filter(|app| app.matches_category(category.as_deref()))
+            .collect::<Vec<ArrApp>>();
 
         let targets = targets
             .into_iter()

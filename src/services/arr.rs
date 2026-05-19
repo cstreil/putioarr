@@ -1,6 +1,7 @@
 use crate::{download_system::transfer, Config};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -68,6 +69,22 @@ impl ArrApp {
             ));
         }
         apps
+    }
+
+    fn category(&self) -> &'static str {
+        match self.app_type {
+            ArrAppType::Sonarr => "tv",
+            ArrAppType::Radarr => "movies",
+            ArrAppType::Lidarr => "music",
+            ArrAppType::Whisparr => "whisparr",
+        }
+    }
+
+    pub fn matches_category(&self, category: Option<&str>) -> bool {
+        match category {
+            Some(category) => self.category() == category,
+            None => true,
+        }
     }
 
     fn url(&self, page: u32) -> String {
@@ -151,6 +168,42 @@ impl ArrApp {
                 return Ok(false);
             }
         }
+    }
+
+    pub async fn trigger_import_scan(&self, path: &str) -> Result<bool> {
+        let command = match self.app_type {
+            ArrAppType::Radarr => Some(json!({
+                "name": "DownloadedMoviesScan",
+                "path": path,
+                "importMode": "auto"
+            })),
+            ArrAppType::Sonarr => Some(json!({
+                "name": "DownloadedEpisodesScan",
+                "path": path,
+                "importMode": "auto"
+            })),
+            _ => None,
+        };
+
+        let Some(command) = command else {
+            return Ok(false);
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/api/v3/command", self.config.url))
+            .header("X-Api-Key", &self.config.api_key)
+            .json(&command)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            bail!("command status: {}, body: {}", status, body);
+        }
+
+        Ok(true)
     }
 }
 

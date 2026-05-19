@@ -3,6 +3,7 @@ use crate::{
         download::{DownloadDoneStatus, DownloadTargetMessage},
         transfer::Transfer,
     },
+    services::arr::ArrApp,
     AppData,
 };
 use actix_web::web::Data;
@@ -107,6 +108,27 @@ async fn watch_for_import(
     transfer: Transfer,
 ) -> Result<()> {
     info!("{}: watching imports", transfer);
+
+    let category = transfer.category().await;
+
+    if let Some(top_level_target) = transfer.get_top_level() {
+        for app in ArrApp::from_config(&app_data.config)
+            .into_iter()
+            .filter(|app| app.matches_category(category.as_deref()))
+        {
+            match app.trigger_import_scan(&top_level_target.to).await {
+                Ok(true) => info!("{}: triggered import scan via {}", transfer, app),
+                Ok(false) => {}
+                Err(e) => warn!("{}: failed to trigger import scan via {}: {}", transfer, app, e),
+            }
+        }
+    } else {
+        warn!(
+            "{}: unable to determine top-level target for proactive import scan",
+            transfer
+        );
+    }
+
     loop {
         if transfer.is_imported().await {
             info!("{}: imported", transfer);
