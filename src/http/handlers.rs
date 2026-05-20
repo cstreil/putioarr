@@ -1,5 +1,6 @@
 use crate::{
     // downloader::DownloadStatus,
+    download_system::transfer::Transfer,
     services::putio::PutIOTransfer,
     services::transmission::{TransmissionRequest, TransmissionTorrent},
     AppData,
@@ -259,43 +260,51 @@ pub(crate) async fn handle_torrent_get(
         .await
         .context("Failed to list put.io transfers")?
         .transfers;
-    let category_map = app_data.category_map.read().await;
+    let category_map = app_data.category_map.read().await.clone();
 
     let download_base = app_data.config.download_directory.clone();
+    let mut transmission_transfers = Vec::new();
+    for t in transfers.into_iter().filter(|t| match category {
+        None => true,
+        Some(cat) => t
+            .hash
+            .as_ref()
+            .map_or(false, |h| category_map.get(h).map_or(false, |c| c == cat)),
+    }) {
+        let cat = t
+            .hash
+            .as_ref()
+            .and_then(|h| category_map.get(h))
+            .cloned();
+        let mut transfer = Transfer::from(app_data.clone(), &t);
+        transfer.targets = transfer.get_download_targets().await.ok();
+        let imported = transfer.is_imported().await;
 
-    let transmission_transfers = transfers
-        .into_iter()
-        .filter(|t| match category {
-            None => true,
-            Some(cat) => t
-                .hash
-                .as_ref()
-                .map_or(false, |h| category_map.get(h).map_or(false, |c| c == cat)),
-        })
-        .map(|t| {
-            let cat = t
-                .hash
-                .as_ref()
-                .and_then(|h| category_map.get(h))
-                .cloned();
-            let mut tt: TransmissionTorrent = t.into();
-            // Set correct download_dir including category subdirectory
-            tt.download_dir = match &cat {
-                Some(c) => format!("{}/{}", download_base, c),
-                None => download_base.clone(),
-            };
-            // If put.io says COMPLETED but local download may not be done,
-            // report as Seeding (status 6) with is_finished=false so *arr apps
-            // keep polling instead of trying to import prematurely.
-            if tt.is_finished && tt.status == crate::services::transmission::TransmissionTorrentStatus::Stopped {
-                tt.status = crate::services::transmission::TransmissionTorrentStatus::Seeding;
-                tt.is_finished = false;
-            }
-            tt
-        })
-        .collect::<Vec<TransmissionTorrent>>();
+        // Once Arr has imported every relevant target, keep monitoring the remote
+        // transfer internally but stop advertising it to the download client queue.
+        // Otherwise Sonarr/Radarr keep showing a stuck "downloading" item while
+        // put.io is only seeding or waiting for remote cleanup.
+        if imported {
+            continue;
+        }
 
-    drop(category_map);
+        let mut tt: TransmissionTorrent = t.into();
+        tt.download_dir = match &cat {
+            Some(c) => format!("{}/{}", download_base, c),
+            None => download_base.clone(),
+        };
+        let local_targets_ready = local_targets_ready(&transfer);
+        if tt.is_finished && !local_targets_ready {
+            tt.status = crate::services::transmission::TransmissionTorrentStatus::Downloading;
+            tt.is_finished = false;
+        } else if tt.is_finished
+            && tt.status == crate::services::transmission::TransmissionTorrentStatus::Stopped
+        {
+            tt.status = crate::services::transmission::TransmissionTorrentStatus::Seeding;
+            tt.is_finished = false;
+        }
+        transmission_transfers.push(tt);
+    }
 
     let torrents = json!(transmission_transfers);
 
@@ -303,4 +312,21 @@ pub(crate) async fn handle_torrent_get(
     arguments.insert(String::from("torrents"), torrents);
 
     Ok(Some(json!(arguments)))
+}
+
+fn local_targets_ready(transfer: &Transfer) -> bool {
+    let targets = match transfer.targets.as_ref() {
+        Some(targets) => targets.clone(),
+        None => return false,
+    };
+    let file_targets = targets
+        .into_iter()
+        .filter(|t| t.target_type == crate::download_system::transfer::TargetType::File)
+        .collect::<Vec<_>>();
+
+    if file_targets.is_empty() {
+        return false;
+    }
+
+    file_targets.iter().all(|target| Path::new(&target.to).exists())
 }

@@ -43,6 +43,8 @@ impl Transfer {
         let targets = targets
             .into_iter()
             .filter(|t| t.target_type == TargetType::File)
+            .filter(|t| !self.should_skip_target(t))
+            .filter(|t| apps.iter().any(|app| app.can_handle_target(t)))
             .collect::<Vec<DownloadTarget>>();
         // .map(|t| t.to.clone())
         // .collect::<Vec<String>>();
@@ -67,6 +69,10 @@ impl Transfer {
         }
         // Check if all targets have been imported
         results.into_iter().all(|x| x)
+    }
+
+    fn should_skip_target(&self, target: &DownloadTarget) -> bool {
+        should_skip_path(&self.app_data.config.skip_directories, &target.to)
     }
 
     pub async fn get_download_targets(&self) -> Result<Vec<DownloadTarget>> {
@@ -149,11 +155,7 @@ async fn recurse_download_targets(
 
     match response.parent.file_type.as_str() {
         "FOLDER" => {
-            if !app_data
-                .config
-                .skip_directories
-                .contains(&response.parent.name.to_lowercase())
-            {
+            if !should_skip_name(&app_data.config.skip_directories, &response.parent.name) {
                 let new_base_path = to.clone();
 
                 targets.push(DownloadTarget {
@@ -181,6 +183,11 @@ async fn recurse_download_targets(
             }
         }
         _ => {
+            if should_skip_name(&app_data.config.skip_directories, &response.parent.name) {
+                debug!("{}: skipping configured file", response.parent.name);
+                return Ok(targets);
+            }
+
             let media_type = MediaType::from_file_type_str(response.parent.file_type.as_str())
                 .or_else(|| MediaType::from_file_name(&response.parent.name));
 
@@ -221,6 +228,31 @@ async fn recurse_download_targets(
     }
 
     Ok(targets)
+}
+
+fn should_skip_name(skip_entries: &[String], name: &str) -> bool {
+    let lowered = name.to_lowercase();
+    let stem = Path::new(&lowered)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    skip_entries.iter().any(|entry| {
+        let needle = entry.to_lowercase();
+        lowered == needle || stem == needle
+    })
+}
+
+fn should_skip_path(skip_entries: &[String], path: &str) -> bool {
+    let lowered = path.to_lowercase();
+    if should_skip_name(skip_entries, &lowered) {
+        return true;
+    }
+
+    Path::new(path)
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .any(|component| should_skip_name(skip_entries, component))
 }
 
 #[derive(Clone)]

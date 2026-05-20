@@ -123,6 +123,10 @@ impl ArrApp {
         }
     }
 
+    pub fn can_handle_target(&self, target: &transfer::DownloadTarget) -> bool {
+        self.should_handle(target).unwrap_or(false)
+    }
+
     pub async fn check_imported(&self, target: &transfer::DownloadTarget) -> Result<bool> {
         if !self.should_handle(target)? {
             return Ok(false);
